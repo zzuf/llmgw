@@ -1,0 +1,6 @@
+#!/bin/sh
+set -eu
+cd "$(dirname "$0")/.."
+gofmt -w cmd internal web
+go vet ./...
+go test ./...

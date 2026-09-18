@@ -1,0 +1,57 @@
+# Build output and Go test artifacts
+/bin/
+/build/
+/dist/
+/llmgw
+*.test
+*.exe
+*.dSYM/
+/coverage/
+coverage*.out
+*.coverprofile
+*.prof
+*.pprof
+*.trace
+
+# Runtime data, prompts, statistics, and backups
+/data/
+logs/
+backups/
+*.db
+*.db-*
+*.sqlite
+*.sqlite-*
+*.sqlite3
+*.sqlite3-*
+*.llmgwb
+*.log
+*.log.*
+gateway.lock
+pending-restore.bin
+.backup-write-*
+
+# Local credentials and environment configuration
+.env
+.env.*
+!.env.example
+!.env.sample
+!.env.template
+*.key
+*.pem
+*.p12
+*.pfx
+
+# Local development and QA tools (not needed at runtime)
+/.tools/
+/.superpowers/
+/.cache/
+node_modules/
+
+# Editor and macOS metadata
+/.idea/
+/.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+._*
