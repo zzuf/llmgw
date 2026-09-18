@@ -40,6 +40,9 @@ func (s *Server) candidate(r *http.Request) (domain.APIKey, error) {
 	return key, nil
 }
 func (s *Server) public(w *responseWriter, r *http.Request, requestID string) {
+	// Only public API routes use wildcard CORS; administrator sessions remain same-origin.
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+	w.Header().Set("Access-Control-Expose-Headers", "X-Request-ID")
 	start := time.Now()
 	bodyConsumed := r.Body == nil || r.Body == http.NoBody || r.ContentLength == 0
 	if !bodyConsumed {
@@ -55,6 +58,18 @@ func (s *Server) public(w *responseWriter, r *http.Request, requestID string) {
 			}
 		}
 	}()
+	if r.Method == http.MethodOptions {
+		// Preflight has no bearer credentials and must not depend on the database or upstream.
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+		headers := strings.Join(r.Header.Values("Access-Control-Request-Headers"), ", ")
+		if headers == "" {
+			headers = "Authorization, Content-Type"
+		}
+		w.Header().Set("Access-Control-Allow-Headers", headers)
+		w.Header().Add("Vary", "Access-Control-Request-Headers")
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
 	fail := func(status int, code, msg string) {
 		rec.ErrorCode = code
 		if code == "timeout" {

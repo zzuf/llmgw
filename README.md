@@ -149,6 +149,36 @@ print(result.choices[0].message.content)
 
 意味を変えるChat→Responsesなどの変換は行いません。上流EngineとCapabilityが対応する機能だけを使用でき、未対応の場合は`unsupported_endpoint`または`unsupported_capability`を返します。エラーはOpenAI形式の`error.message/type/code`です。
 
+### ブラウザからのアクセス（CORS）
+
+公開APIの`/v1`と`/v1/*`は、すべてのOriginを`Access-Control-Allow-Origin: *`で許可します。別ホスト・別ポートのWebアプリからも利用でき、`OPTIONS`プリフライトには認証不要で204を返します。許可メソッドはGET／POST／OPTIONSです。`Authorization`、`Content-Type`、SDK独自ヘッダーなど、プリフライトで要求されたヘッダー名を許可します。通常レスポンス・エラー・SSEすべてに適用され、JavaScriptから`X-Request-ID`も読み取れます。
+
+Cookieを使うクロスオリジン認証は許可しません。`fetch`では`credentials: 'omit'`を指定し、必要な場合はGateway APIキーをBearerヘッダーで送ってください。`apiKey`は利用者が入力したキーを渡します。
+
+```javascript
+async function chat(apiKey) {
+  const response = await fetch('http://localhost:8080/v1/chat/completions', {
+    method: 'POST',
+    credentials: 'omit',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${apiKey}`,
+    },
+    body: JSON.stringify({
+      model: 'qwen-fast',
+      messages: [{ role: 'user', content: 'こんにちは' }],
+    }),
+  });
+  const result = await response.json();
+  if (!response.ok) throw new Error(result.error.message);
+  return result;
+}
+```
+
+モデルのIP／APIキーACLは引き続き適用します。IP ACLが識別するのはブラウザの接続元IPで、WebサイトのOriginではありません。IP条件を満たす端末では、どのWebサイトからもAPIキー制限のないモデルを呼べます。キーを持つクライアントだけに限定する場合はモデルのAPIキーACLを設定してください。管理API・管理UI・setupには公開APIのCORS許可を適用せず、管理認証とCSRF保護を維持します。プリフライトもHTTPアクセスログとリクエスト統計に記録します。
+
+ブラウザ側の制約は別途適用されます。HTTPSページからHTTP Gatewayへの接続は[混在コンテンツの制約](https://developer.mozilla.org/en-US/docs/Web/Security/Defenses/Mixed_content)で拒否される場合があります。[Chromeのローカルネットワークアクセス](https://developer.chrome.com/release-notes/142#local_network_access_restrictions)にはブラウザでの許可とsecure contextが必要な場合があり、CORS設定だけでこれらの制約を解除することはできません。
+
 ## 設定変更
 
 Settingsから変更する値はSQLiteに保存されます。

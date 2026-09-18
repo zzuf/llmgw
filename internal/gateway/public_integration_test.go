@@ -54,10 +54,12 @@ func TestNativeProtocolsRewriteAliasAndIsolateUpstreamCredentials(t *testing.T) 
 		t.Run(test.endpoint, func(t *testing.T) {
 			test.body["extension"] = json.RawMessage(`{"big":9007199254740993,"nested":{"model":"leave-intact"}}`)
 			r := requestJSON(t, "POST", test.endpoint, test.body)
+			r.Header.Set("Origin", "https://client.example")
 			r.Header.Set("Authorization", "Bearer llmgw_client-private-token")
 			r.Header.Set("X-Api-Key", "untrusted-key")
 			r.Header.Set("Cookie", "llmgw_session=private-browser-session")
 			w := serve(t, f.server, r, 200)
+			assertPublicCORS(t, w.Result().Header)
 			result := decodeResponse[map[string]json.RawMessage](t, w)
 			if string(result["model"]) != `"public-alias"` || string(result["metadata"]) != `{"model":"native-model"}` {
 				t.Fatalf("response model normalization=%s", w.Body.String())
@@ -66,7 +68,7 @@ func TestNativeProtocolsRewriteAliasAndIsolateUpstreamCredentials(t *testing.T) 
 			if got.path != test.endpoint || got.method != "POST" || string(got.body["model"]) != `"native-model"` {
 				t.Fatalf("wrong native route: %+v", got)
 			}
-			if got.header.Get("Authorization") != "Bearer upstream-only-secret" || got.header.Get("X-Api-Key") != "" || got.header.Get("Cookie") != "" {
+			if got.header.Get("Authorization") != "Bearer upstream-only-secret" || got.header.Get("X-Api-Key") != "" || got.header.Get("Cookie") != "" || got.header.Get("Origin") != "" {
 				t.Fatalf("credentials not isolated: %v", got.header)
 			}
 			if string(got.body["extension"]) != `{"big":9007199254740993,"nested":{"model":"leave-intact"}}` {
@@ -141,6 +143,7 @@ func TestModelListingUsesTCPPeerAndBothACLs(t *testing.T) {
 	for _, test := range cases {
 		t.Run(test.name, func(t *testing.T) {
 			r := requestJSON(t, "GET", "/v1/models", nil)
+			r.Header.Set("Origin", "http://localhost:3000")
 			r.RemoteAddr = test.remote
 			r.Header.Set("X-Forwarded-For", "127.0.0.1")
 			r.Header.Set("X-Real-IP", "127.0.0.1")
@@ -149,6 +152,7 @@ func TestModelListingUsesTCPPeerAndBothACLs(t *testing.T) {
 				r.Header.Set("Authorization", "Bearer "+test.bearer)
 			}
 			w := serve(t, f.server, r, 200)
+			assertPublicCORS(t, w.Result().Header)
 			var result struct {
 				Object string `json:"object"`
 				Data   []struct {
@@ -197,12 +201,15 @@ func TestGenerationACLsAndDisabledKeys(t *testing.T) {
 	for _, test := range cases {
 		t.Run(test.name, func(t *testing.T) {
 			r := requestJSON(t, "POST", "/v1/chat/completions", chatBody(test.alias))
+			r.Header.Set("Origin", "https://client.example")
+			r.Header.Set("Sec-Fetch-Site", "cross-site")
 			r.RemoteAddr = test.remote
 			r.Header.Set("X-Forwarded-For", "10.1.2.3")
 			if test.bearer != "" {
 				r.Header.Set("Authorization", "Bearer "+test.bearer)
 			}
 			w := serve(t, f.server, r, test.status)
+			assertPublicCORS(t, w.Result().Header)
 			if test.code != "" {
 				assertErrorCode(t, w, test.code)
 			}

@@ -21,7 +21,7 @@ The standard test suite and race detector pass. Vet reports no issues. The binar
 17 MiB and `otool -L` shows only macOS libSystem, libresolv, CoreFoundation and Security.framework.
 Node is not a build or runtime dependency of the gateway.
 
-The macOS test listing contains 116 top-level tests, including one opt-in browser preview that skips
+The macOS test listing contains 120 top-level tests, including one opt-in browser preview that skips
 normally. Table-driven subtests exercise additional cases. No TODO/stub implementation was left for a
 requested feature.
 
@@ -35,6 +35,7 @@ Govulncheck found no affected symbols or imported packages. It noted GO-2026-593
 | ACL | no ACL, IP-only, key-only, AND, invalid IP, CIDR, IPv6, mapped IPv4, unknown Bearer, disabled key, forwarding-header spoofing |
 | Models | aliases, duplicate rejection, hidden/unavailable rejection, restricted listing, discovery absence/reappearance, preserved policy |
 | Protocols | all six POST routes with Mock Engine, model/credential rewrite isolation, malformed JSON, unsupported endpoints/capabilities, upstream 500 and timeouts |
+| CORS | any Origin including null, preflight without DB/auth, requested SDK headers, readable errors/request ID, unchanged model ACL/filtering, early SSE headers, no CORS on admin/setup/health |
 | Streaming | early flush, cancellation, usage/TTFT, truncation, started-stream failures, nested Responses/Messages usage, final zero corrections, BOM/CR/LF/CRLF framing |
 | Admin | localhost setup, concurrent first setup, login/logout/session rotation, stale password check, password revocation, CSRF/origin, CRUD, secret reveal audit |
 | Crypto | Argon2id, random API keys, AES-GCM round trip, tampering, wrong master/AAD, Keychain backend failures/canonical path isolation |

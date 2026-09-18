@@ -61,6 +61,7 @@ func TestSSEDeliversFirstEventBeforeUpstreamCompletesAndRecordsUsage(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
+	r.Header.Set("Origin", "https://client.example")
 	type responseResult struct {
 		response *http.Response
 		err      error
@@ -78,6 +79,7 @@ func TestSSEDeliversFirstEventBeforeUpstreamCompletesAndRecordsUsage(t *testing.
 		t.Fatal("gateway buffered the stream until upstream completion")
 	}
 	defer response.Body.Close()
+	assertPublicCORS(t, response.Header)
 	if response.StatusCode != 200 || !strings.HasPrefix(response.Header.Get("Content-Type"), "text/event-stream") {
 		t.Fatalf("unexpected SSE response: %d %v", response.StatusCode, response.Header)
 	}

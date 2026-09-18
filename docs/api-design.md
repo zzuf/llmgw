@@ -33,6 +33,22 @@ engine_unavailable (503), unsupported_endpoint (501), unsupported_capability (40
 timeout (504), invalid_request (400), internal_error (500). Unauthorized only applies when a key ACL
 exists. A valid but unlisted key is forbidden. Unsupported method returns 405.
 
+### Browser access / CORS
+
+Only `/v1` and `/v1/*` allow all origins with `Access-Control-Allow-Origin: *`, including
+successes, errors, and streaming responses. `X-Request-ID` is exposed to browser JavaScript.
+`OPTIONS` returns 204 before database access, credential lookup, model ACL evaluation, or upstream
+requests. Preflight permits GET, POST, and OPTIONS and explicitly echoes requested header names,
+including Authorization and SDK extension headers; absent a requested list, it permits Authorization
+and Content-Type. Responses vary on Access-Control-Request-Headers. Preflights are included in access
+logs and request statistics, with no model, engine, or API-key attribution.
+
+Cookie credentials are not enabled: browser clients should use `credentials: 'omit'` and provide
+any required Gateway API key via Authorization: Bearer. All model ACLs still apply to actual calls.
+Source-IP rules identify the browser's TCP peer, not the initiating website, so IP-only models are
+callable by any origin on an allowed client. Administrative routes never inherit this CORS policy.
+Browser mixed-content and local-network permission policies remain independent of CORS.
+
 ## Administrative API and UI
 
 Embedded `/setup`, `/admin/login`, and `/admin/` pages use same-origin requests and cookie sessions.

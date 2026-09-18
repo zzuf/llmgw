@@ -40,6 +40,11 @@ and `::1/128`; an explicitly empty edited list removes IP restriction. Key delet
 restricted model public: deletion of referenced keys is rejected until its ACL references are removed.
 `GET /v1/models` filters published, available, enabled-engine models by both ACLs.
 
+The public API (`/v1` and `/v1/*`) permits every browser Origin via wildcard CORS, without cookie
+credentials. Preflight OPTIONS is logged and answered locally before authentication or database access;
+actual API calls still evaluate both model ACLs. IP-only ACLs do not distinguish websites running in
+an allowed client's browser. Public CORS is not applied to administration, setup, or health routes.
+
 First setup is local TCP loopback only, with a transaction preventing concurrent first-admin creation.
 Administrators use Argon2id hashes, opaque freshly generated sessions (24 hours), HttpOnly/SameSite
 cookies, same-origin checks, and session-bound CSRF tokens. Password changes revoke sessions.
