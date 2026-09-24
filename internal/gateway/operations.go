@@ -28,7 +28,12 @@ func (s *Server) adminSettings(w http.ResponseWriter, r *http.Request, a domain.
 		methodError(w)
 		return
 	}
-	var v domain.Settings
+	// A client using an older settings form must not reset newer settings on save.
+	v, e := s.Store.Settings(r.Context())
+	if e != nil {
+		adminError(w, e)
+		return
+	}
 	if decode(r, &v) != nil {
 		apiError(w, 400, "invalid_request", "Invalid settings JSON")
 		return

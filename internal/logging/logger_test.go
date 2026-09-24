@@ -10,6 +10,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -396,5 +397,80 @@ func TestCloseRacingRecordDoesNotLoseAcceptedWrites(t *testing.T) {
 	}
 	if count != accepted.Load() {
 		t.Fatalf("lost %d accepted writes", accepted.Load()-count)
+	}
+}
+
+func TestGuardMetadataSnapshotAndSeparateUsage(t *testing.T) {
+	logger, db, dir := newTestLogger(t, domain.DefaultSettings())
+	ctx := context.Background()
+	// Hold the single DB connection so the worker cannot consume the second
+	// record before its caller mutates the original slices.
+	conn, err := db.Conn(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	if err := logger.Record(sampleRecord("block-writer")); err != nil {
+		t.Fatal(err)
+	}
+	record := sampleRecord("guarded")
+	record.TTFTMS, record.UpstreamTTFTMS = 900, 15
+	record.GuardChecks = []domain.GuardCheck{
+		{Stage: "input", SafeguardID: "guard1", SafeguardName: "Qwen safety", EngineID: "guard-engine", EngineName: "Safety engine", UpstreamModel: "Qwen3Guard-Gen", Result: "allowed", Label: "Safe", Categories: []string{"None"}, DurationMS: 20, Usage: domain.Usage{InputTokens: 100, OutputTokens: 10, TotalTokens: 110}},
+		{Stage: "output", SafeguardID: "guard1", SafeguardName: "Qwen safety", Result: "rejected", Label: "Unsafe", Categories: []string{"Violent"}, Refusal: "No", DurationMS: 30, ErrorCode: "guard_rejected", Usage: domain.Usage{InputTokens: 150, OutputTokens: 20, TotalTokens: 170}},
+	}
+	record.Status, record.ErrorCode = 403, "guard_rejected"
+	wantJSON, err := json.Marshal(record.GuardChecks)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := logger.Record(record); err != nil {
+		t.Fatal(err)
+	}
+	record.GuardChecks[0].Categories[0] = "mutated"
+	record.GuardChecks[1].Label = "mutated"
+	record.GuardChecks[0].Usage.TotalTokens = 9999
+	conn.Close()
+	if err := logger.Flush(ctx); err != nil {
+		t.Fatal(err)
+	}
+	rows, total, err := AccessLogs(ctx, db, "request:guarded", 1, 20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if total != 1 || len(rows) != 1 {
+		t.Fatalf("missing guarded record: %d %#v", total, rows)
+	}
+	gotJSON, _ := json.Marshal(rows[0].GuardChecks)
+	if string(gotJSON) != string(wantJSON) || rows[0].UpstreamTTFTMS != 15 || rows[0].TTFTMS != 900 {
+		t.Fatalf("guard snapshot changed or missing: %s, timings %v/%v", gotJSON, rows[0].TTFTMS, rows[0].UpstreamTTFTMS)
+	}
+	data, err := os.ReadFile(filepath.Join(dir, "logs", "access.log"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var stored domain.AccessRecord
+	lines := strings.Split(strings.TrimSpace(string(data)), "\n")
+	if len(lines) != 2 {
+		t.Fatalf("guard generated extra client log records: %d", len(lines))
+	}
+	if err := json.Unmarshal([]byte(lines[1]), &stored); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(stored.GuardChecks, rows[0].GuardChecks) {
+		t.Fatalf("JSONL and SQLite guard metadata differ: %#v", stored.GuardChecks)
+	}
+	dashboard, err := Dashboard(ctx, db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dashboard["today_requests"] != int64(2) || dashboard["input_tokens"] != int64(14) || dashboard["output_tokens"] != int64(22) || dashboard["total_tokens"] != int64(36) {
+		t.Fatalf("guard calls changed generation totals: %#v", dashboard)
+	}
+	for _, filter := range []string{"guard:Unsafe", "guard:Qwen", "guard:rejected", "guard:Violent"} {
+		_, total, err := AccessLogs(ctx, db, filter, 1, 20)
+		if err != nil || total != 1 {
+			t.Errorf("guard filter %q: total=%d error=%v", filter, total, err)
+		}
 	}
 }

@@ -1,7 +1,7 @@
 # Database schema and migration plan
 
 All timestamps are UTC RFC3339Nano strings, IDs are random opaque strings, booleans are INTEGER 0/1.
-Migration 1 is embedded, applied within a transaction, recorded in `schema_migrations(version, applied_at)`.
+Numbered migrations are embedded, applied within transactions, recorded in `schema_migrations(version, applied_at)`.
 Startup refuses a database created by a newer schema. Foreign keys are enabled on every connection.
 
 | Entity | Columns / constraints |
@@ -12,11 +12,12 @@ Startup refuses a database created by a newer schema. Foreign keys are enabled o
 | upstream_models | engine_id + upstream_id composite PK, display_name, available, capabilities JSON, last_seen; engine FK CASCADE |
 | models | id PK, alias UNIQUE, engine_id FK RESTRICT, upstream_model_id, display_name, published, available, created_at, updated_at |
 | model_allowed_ips | model_id FK CASCADE, cidr; composite PK |
-| api_keys | id PK, name, secret_cipher, secret_hash UNIQUE, suffix, enabled, last_used_at, created_at, updated_at |
+| safeguards | id PK, name, engine_id FK RESTRICT, upstream_model_id, adapter, enabled, last_check, last_error, created_at, updated_at; upstream composite FK RESTRICT |
+| api_keys | id PK, name, secret_cipher, secret_hash UNIQUE, suffix, enabled, last_used_at, created_at, updated_at, input_safeguard_id nullable FK RESTRICT, output_safeguard_id nullable FK RESTRICT, block_controversial default 0 |
 | api_key_tags | api_key_id FK CASCADE, tag; composite PK |
 | model_allowed_api_keys | model_id FK CASCADE, api_key_id FK RESTRICT; composite PK |
 | model_capabilities | model_id FK CASCADE, capability, enabled; composite PK; rows represent effective admin-overridable flags |
-| request_stats | id PK, timestamp, source_ip, request_id, api_key_id/name/tags snapshots, model alias/id, engine id/name, upstream_model, endpoint, method, status, streaming, duration_ms, ttft_ms, input/output/total_tokens, error_code |
+| request_stats | id PK, timestamp, source_ip, request_id, api_key_id/name/tags snapshots, model alias/id, engine id/name, upstream_model, endpoint, method, status, streaming, duration_ms, ttft_ms, upstream_ttft_ms, input/output/total_tokens, error_code, guard_checks JSON default [] |
 | daily_stats | day + model_id + engine_id + api_key_id composite PK; snapshot names, requests, errors, streaming, duration_ms, input/output/total_tokens |
 | audit_logs | id PK, timestamp, actor_id/name, source_ip, action, target, result, detail (sanitized) |
 | settings | key PK, value JSON |
@@ -28,7 +29,8 @@ Detailed statistics have timestamp/filter indexes. Daily aggregation uses UPSERT
 as insertion of the detail record. Request ID is unique to avoid accidental duplicate counting.
 Audit logs never contain prompt or credentials. Request prompts live only in rotating JSONL files.
 
-Deletion policy: engines with gateway models and API keys referenced by model ACLs cannot be deleted.
+Deletion policy: engines with gateway models or safeguards, safeguards referenced by API keys, and API keys
+referenced by model ACLs cannot be deleted.
 The UI explains the dependency. Deleting a model removes its ACL/capability children. Deleting an admin
 invalidates its sessions; deletion of the last admin is rejected inside a transaction.
 
@@ -39,3 +41,21 @@ execute the absence transaction. Newly discovered IDs remain upstream-only until
 Settings include listen_address, health_interval_seconds, request_timeout_seconds, log_rotation_bytes,
 log_generations, statistics_retention_days, backup_retention_days, and auto_backup_enabled.
 Defaults are 0.0.0.0:8080, 30, 600, 104857600, 10, 90, 14, true respectively.
+
+Migration 2 adds safeguards, API-key policy references, `guard_checks`, and `upstream_ttft_ms` (default 0).
+Existing key references remain NULL with `block_controversial=0`, preserving unguarded behavior.
+Guard availability joins the synchronized upstream entry rather than duplicating discovery state;
+disappearance/reappearance keeps profile identity, key policy, and last-check metadata intact.
+
+Guard settings default to `guard_timeout_seconds=60`, `guard_max_text_bytes=262144`, and
+`guard_max_spool_bytes=67108864`. Stored settings from older databases are merged with these defaults.
+Updates affect new requests; inference does not hold a transaction open.
+
+Each `guard_checks` entry snapshots stage, guard and engine identities/names, upstream model, result,
+label/categories/refusal, duration, error code, and classifier token usage. It contains no raw prompt or
+model response. It is retained/pruned with its request. Normal daily request and token totals do not
+include internal guard calls; deleted/renamed profiles do not rewrite historical check snapshots.
+
+Backup validation accepts only known original schema versions and validates original schema, integrity,
+and secret authentication before migration, then checks the current schema again. Restoring a v1 backup
+creates unguarded existing keys; both local and portable current backups include safeguard settings.

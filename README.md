@@ -31,6 +31,7 @@ internal/database/ 埋め込みmigrationとtransactional repository
 internal/domain/   共通データ型
 internal/engine/   Request解析、Adapter、Response/SSE正規化
 internal/gateway/  公開API、管理API、UI配信
+internal/safeguard/ セーフガード判定、テキスト検査、出力保留
 internal/keychain/ macOS Security.framework
 internal/logging/  JSONL、rotation、SQLite統計、検索
 internal/service/ User LaunchAgent
@@ -97,6 +98,37 @@ IPv4、IPv6、CIDRに対応します。IPv4-mapped IPv6も正規化します。I
 **API Keys**でキーを作成し、名前・複数タグ・有効状態を管理します。**Models**で許可するキーを選びます。タグは分類用で、認可には使用しません。キーは一覧でマスクされ、Reveal操作だけで全文を表示します。この操作は監査ログに残ります。
 
 APIキーACLのないモデルでは、`Authorization: Bearer dummy-key`でも、それを理由に拒否しません。ACLで参照中のキーは削除できません。先にモデルのACLを変更するか、キーをDisableしてください。空のACLが認証なしを意味するため、削除で意図せずモデルが公開されるのを防ぎます。
+
+## APIキーごとのセーフガード
+
+1. EngineにQwen3Guard-Gen系モデルを読み込み、**Sync**で同期します。公式の専用chat templateを維持した量子化版にも対応します。テンプレートは上流Engine側で適用してください。[Qwen公式の形式](https://github.com/QwenLM/Qwen3Guard#qwen3guard-gen)を利用し、Qwen3Guard-Stream形式には対応しません。
+2. **Settings → Safeguards → Add safeguard**でEngine／同期済みモデルを選び、名前・Guard format・Enabledを設定します。公開aliasへの登録は不要です。名前による候補表示だけでは有効化されません。
+3. 保存後の**Check**で入力と出力の判定形式を確認します。判定結果、カテゴリ、所要時間、Guardのtoken usageを表示します。
+4. **API keys → Edit → Safeguards**で入力用／出力用をそれぞれ指定します。片方だけの設定も可能です。既定では`Unsafe`だけを遮断し、**Also block Controversial**で`Controversial`も遮断します。
+5. ガードを必須にするモデルでは、**ModelsのAllowed API keysを必ず設定**してください。ガードは送信された有効なキーに付属する設定です。匿名・未知のBearer・ガード未設定キーの既存動作は変わりません。
+
+入力チェックは通常推論の前、出力チェックはクライアントへの配信前に実行します。Chat Completions／Responses／Completions／Messagesのテキスト、履歴、system／developer、ツール定義・引数・結果、reasoningと全choices/itemsを検査します。Embeddings／Rerankではテキスト入力を検査し、数値ベクトル・スコアの出力は対象外です。Rerankで返されるdocumentのテキストには出力チェックが適用されます。`GET /v1/models`と`OPTIONS`には適用しません。
+
+**出力チェックを有効にしたStreamingは、全文が合格するまでSSEを配信しません。** 入力チェックだけなら、合格後のStreamingは従来どおりリアルタイムです。保留中のイベントは専用0700ディレクトリの0600一時ファイルへ書き、開いた直後にunlinkして処理終了やクラッシュ後の残存を防ぎます。TTFTには出力判定待ち時間も含まれ、上流の初回イベント時間は`upstream_ttft_ms`へ別記録します。
+
+Guardの停止・無効化・モデル消失、不正な分類、途切れた判定は通過させずエラーにします。画像、音声、ファイル、token ID入力、Gatewayに内容が存在しない履歴参照、解釈できない内容もガード対象の要求ではエラーになります。出力だけのチェックでも判定に必要な入力文脈は検査形式へ変換する必要があります。参照中のGuard／Engineは削除できず、無効化してもキーへの割り当ては保持されます。
+
+出力チェック付きSSEでは、logprobs、空でないannotations、解釈できない内容を含むイベント、不完全なfinish状態も明示的な未対応／判定不能エラーにします。これらを読み飛ばして残りだけを安全と判定しません。ガード未設定のSSE互換性には追加制限をかけません。
+
+| 設定 | 既定値 | 適用範囲 |
+|---|---|---|
+| `guard_timeout_seconds` | 60秒 | Guard判定1回。1〜86400秒 |
+| `guard_max_text_bytes` | 262144（256 KiB） | 検査文面。最大16 MiB |
+| `guard_max_spool_bytes` | 67108864（64 MiB） | 出力チェック用の保留応答。最大1 GiB |
+| Guardの返答サイズ | 65536（64 KiB） | 固定上限 |
+
+最初の3項目はSettingsから変更でき、新規要求に即時反映します。上限超過時はテキストを切り捨てず停止します。ガード未設定の要求へこれらの制限は追加しません。処理中の要求は開始時点のキー／Guard／Engine／Settingsの設定を保持します。
+
+エラーコードは、遮断403 `guard_rejected`、判定不能503 `guard_unavailable`、判定時間超過504 `guard_timeout`、非対応形式400 `unsupported_guard_content`、保持・検査上限503 `guard_limit_exceeded`です。通常のモデルACLとCapabilityのエラーは従来どおりです。
+
+**Access logs**では`guard:`でGuard名・結果・分類を検索し、Viewから段階、カテゴリ、Refusal、時間、token usageを確認できます。Guard内部呼び出しはクライアント要求数を増やさず、token数も通常推論の集計から分離します。遮断された出力本文やGuardの生応答本文は追加保存しません。入力Promptの既存ログ設定はそのまま適用されます。
+
+既存DBの移行後、すべての既存キーのGuard設定は未設定です。通常／Portable BackupにはGuard設定も含まれ、旧バックアップは元のschemaと認証情報を検証してから新schemaへ移行します。
 
 ## API使用例
 
@@ -291,7 +323,7 @@ httptestのMock Engineで、ACL、alias／availability、公開API、上流認�
 - 管理者全員が秘密情報の表示、Engineの宛先変更、バックアップ取得を行えます。Engine URLは管理者だけが登録できる、信頼された接続先として扱います。
 - Engine・バージョン・モデルごとの完全互換性は保証しません。自動検出は保守的で、Capabilityの手動確認が必要な場合があります。実Engineの推論は同梱のMock検証とは別に確認してください。
 - 公開APIは記載した7ルートです。OpenAIのFiles、Audio、Batch、Responses取得／削除などを実装するものではありません。意味を保持できないAPI変換は行いません。
-- クライアントのrequest bodyサイズ、生成数、token数の上限は設けません。メモリ保護のためSSEの1イベントは8 MiB、モデルdiscoveryは32 MiB、バックアップarchiveは512 MiBまでです。非Streaming JSONとPortable archiveはメモリ上で扱います。
+- ガード未設定のクライアント要求にはrequest bodyサイズ、生成数、token数の上限を設けません。Guardを設定した要求には上記の検査／保留上限があります。メモリ保護のためSSEの1イベントは8 MiB、モデルdiscoveryは32 MiB、バックアップarchiveは512 MiBまでです。非Streaming JSONとPortable archiveはメモリ上で扱います。
 - JSONLへの永続化とSQLite統計は同一transactionにはできません。通常は両方を保存し、書き込み失敗は診断ログとFlush／終了時エラーで通知します。ディスク故障や強制終了直前のqueue分は復旧保証の対象外です。
 - `service.log`はlaunchdの診断出力です。自動rotationの対象は詳細アクセスJSONLです。
 - 本プロジェクトはロードバランシング、failover、quota、rate limit、TLS終端を提供しません。

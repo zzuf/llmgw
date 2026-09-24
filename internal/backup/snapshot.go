@@ -76,9 +76,10 @@ func (m *Manager) snapshot(ctx context.Context) (path string, err error) {
 	return path, db.Close()
 }
 
-// schemaDefinition compares the restored schema with one produced by the current
-// migrations. This rejects triggers, virtual tables, altered constraints and schema
-// masquerading, not merely an attacker-controlled schema_migrations version number.
+// schemaDefinition compares the restored schema with one produced by trusted
+// embedded migrations for its exact original version. This rejects triggers, virtual
+// tables, altered constraints and schema masquerading, not merely an attacker-
+// controlled schema_migrations version number.
 func schemaDefinition(ctx context.Context, db *sql.DB) (map[string]string, error) {
 	rows, err := db.QueryContext(ctx, "SELECT type,name,sql FROM sqlite_schema WHERE sql IS NOT NULL")
 	if err != nil {
@@ -118,8 +119,8 @@ func validateDatabase(ctx context.Context, db *sql.DB) error {
 	if err != nil || len(messages) != 1 || messages[0] != "ok" {
 		return fmt.Errorf("%w: SQLite integrity check failed", ErrInvalidBackup)
 	}
-	var version, count int
-	if err = db.QueryRowContext(ctx, "SELECT COALESCE(MAX(version),0),COUNT(*) FROM schema_migrations").Scan(&version, &count); err != nil || version != database.SchemaVersion || count != database.SchemaVersion {
+	var version, count, minimum int
+	if err = db.QueryRowContext(ctx, "SELECT COALESCE(MAX(version),0),COUNT(*),COALESCE(MIN(version),0) FROM schema_migrations").Scan(&version, &count, &minimum); err != nil || version < 1 || version > database.SchemaVersion || count != version || minimum != 1 {
 		return fmt.Errorf("%w: schema version is not supported", ErrInvalidBackup)
 	}
 	actual, err := schemaDefinition(ctx, db)
@@ -132,11 +133,11 @@ func validateDatabase(ctx context.Context, db *sql.DB) error {
 		}
 		delete(actual, "table:llmgw_backup_auth")
 	}
-	reference, err := database.Open(":memory:")
+	reference, err := database.ReferenceSchema(ctx, version)
 	if err != nil {
 		return fmt.Errorf("load reference schema: %w", err)
 	}
-	expected, err := schemaDefinition(ctx, reference.DB)
+	expected, err := schemaDefinition(ctx, reference)
 	reference.Close()
 	if err != nil {
 		return err

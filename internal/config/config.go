@@ -44,5 +44,20 @@ func Validate(s domain.Settings) error {
 	if s.StatisticsRetentionDays < 1 || s.StatisticsRetentionDays > 36500 || s.BackupRetentionDays < 1 || s.BackupRetentionDays > 36500 {
 		return errors.New("retention days must be 1–36500")
 	}
+	return ValidateGuardSettings(s)
+}
+
+// ValidateGuardSettings bounds guard-only work without imposing these limits on
+// requests whose API key does not configure a safeguard.
+func ValidateGuardSettings(s domain.Settings) error {
+	if s.GuardTimeoutSeconds < 1 || s.GuardTimeoutSeconds > 86400 {
+		return errors.New("guard timeout must be 1–86400 seconds")
+	}
+	if s.GuardMaxTextBytes < 1 || s.GuardMaxTextBytes > 16<<20 {
+		return errors.New("guard text size must be 1 byte–16 MiB")
+	}
+	if s.GuardMaxSpoolBytes < 1 || s.GuardMaxSpoolBytes > 1<<30 {
+		return errors.New("guard spool size must be 1 byte–1 GiB")
+	}
 	return nil
 }

@@ -24,7 +24,7 @@ var (
 	ErrAlreadySetup = errors.New("an administrator already exists")
 )
 
-const SchemaVersion = 1
+const SchemaVersion = 2
 
 //go:embed migrations/*.sql
 var migrations embed.FS
@@ -109,7 +109,41 @@ func Open(path string) (*Store, error) {
 
 func (s *Store) Close() error { return s.DB.Close() }
 
+// Migrate upgrades an already-open, trusted database and initializes new settings.
+// Callers restoring external databases must validate their original schema and
+// authenticate all secrets before invoking this function.
+func Migrate(ctx context.Context, db *sql.DB) error {
+	s := &Store{DB: db}
+	if err := s.migrate(ctx); err != nil {
+		return err
+	}
+	return s.initializeSettings(ctx)
+}
+
+// ReferenceSchema builds an in-memory schema exclusively from embedded migrations.
+// It never reads definitions from a backup and supports historical schema checks.
+func ReferenceSchema(ctx context.Context, version int) (*sql.DB, error) {
+	if version < 1 || version > SchemaVersion {
+		return nil, errors.New("unsupported reference schema version")
+	}
+	db, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		return nil, err
+	}
+	db.SetMaxOpenConns(1)
+	db.SetMaxIdleConns(1)
+	if err := (&Store{DB: db}).migrateTo(ctx, version); err != nil {
+		db.Close()
+		return nil, err
+	}
+	return db, nil
+}
+
 func (s *Store) migrate(ctx context.Context) error {
+	return s.migrateTo(ctx, SchemaVersion)
+}
+
+func (s *Store) migrateTo(ctx context.Context, targetVersion int) error {
 	tx, err := s.DB.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -122,10 +156,10 @@ func (s *Store) migrate(ctx context.Context) error {
 	if err := tx.QueryRowContext(ctx, "SELECT COALESCE(MAX(version),0) FROM schema_migrations").Scan(&version); err != nil {
 		return err
 	}
-	if version > SchemaVersion {
-		return fmt.Errorf("database schema %d is newer than supported version %d", version, SchemaVersion)
+	if version > targetVersion {
+		return fmt.Errorf("database schema %d is newer than supported version %d", version, targetVersion)
 	}
-	for next := version + 1; next <= SchemaVersion; next++ {
+	for next := version + 1; next <= targetVersion; next++ {
 		contents, err := migrations.ReadFile(fmt.Sprintf("migrations/%03d_initial.sql", next))
 		if err != nil {
 			return err

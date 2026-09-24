@@ -9,11 +9,11 @@ import (
 	"llmgw/internal/domain"
 )
 
-const keyColumns = `id,name,secret_cipher,secret_hash,suffix,enabled,last_used_at,created_at,updated_at`
+const keyColumns = `id,name,secret_cipher,secret_hash,suffix,enabled,last_used_at,created_at,updated_at,input_safeguard_id,output_safeguard_id,block_controversial`
 
 func scanKey(row scanner) (domain.APIKey, error) {
 	var key domain.APIKey
-	err := row.Scan(&key.ID, &key.Name, &key.SecretCipher, &key.SecretHash, &key.Suffix, &key.Enabled, &key.LastUsedAt, &key.CreatedAt, &key.UpdatedAt)
+	err := row.Scan(&key.ID, &key.Name, &key.SecretCipher, &key.SecretHash, &key.Suffix, &key.Enabled, &key.LastUsedAt, &key.CreatedAt, &key.UpdatedAt, &key.InputSafeguardID, &key.OutputSafeguardID, &key.BlockControversial)
 	key.Masked = "••••" + key.Suffix
 	return key, dbError(err)
 }
@@ -113,7 +113,7 @@ func (s *Store) SaveAPIKey(ctx context.Context, key *domain.APIKey) error {
 		}
 	}
 	copy.Tags = uniqueStrings(tags)
-	_, err = tx.ExecContext(ctx, `INSERT INTO api_keys(`+keyColumns+`) VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET name=excluded.name,secret_cipher=excluded.secret_cipher,secret_hash=excluded.secret_hash,suffix=excluded.suffix,enabled=excluded.enabled,updated_at=excluded.updated_at`, copy.ID, copy.Name, copy.SecretCipher, copy.SecretHash, copy.Suffix, copy.Enabled, copy.LastUsedAt, copy.CreatedAt, copy.UpdatedAt)
+	_, err = tx.ExecContext(ctx, `INSERT INTO api_keys(`+keyColumns+`) VALUES(?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET name=excluded.name,secret_cipher=excluded.secret_cipher,secret_hash=excluded.secret_hash,suffix=excluded.suffix,enabled=excluded.enabled,updated_at=excluded.updated_at,input_safeguard_id=excluded.input_safeguard_id,output_safeguard_id=excluded.output_safeguard_id,block_controversial=excluded.block_controversial`, copy.ID, copy.Name, copy.SecretCipher, copy.SecretHash, copy.Suffix, copy.Enabled, copy.LastUsedAt, copy.CreatedAt, copy.UpdatedAt, copy.InputSafeguardID, copy.OutputSafeguardID, copy.BlockControversial)
 	if err != nil {
 		return dbError(err)
 	}

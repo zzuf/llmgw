@@ -109,6 +109,8 @@ func (s *Server) admin(w http.ResponseWriter, r *http.Request) {
 		s.adminModels(w, r, a, id)
 	case "keys":
 		s.adminKeys(w, r, a, id, action)
+	case "safeguards":
+		s.adminSafeguards(w, r, a, id, action)
 	case "admins":
 		s.adminUsers(w, r, a, id)
 	case "dashboard":

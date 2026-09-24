@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -302,9 +303,12 @@ func (s *Server) adminKeys(w http.ResponseWriter, r *http.Request, a domain.Admi
 		collection(w, items, len(items))
 	case "POST", "PUT":
 		var v struct {
-			Name    string   `json:"name"`
-			Tags    []string `json:"tags"`
-			Enabled bool     `json:"enabled"`
+			Name               string          `json:"name"`
+			Tags               []string        `json:"tags"`
+			Enabled            bool            `json:"enabled"`
+			InputSafeguardID   json.RawMessage `json:"input_safeguard_id"`
+			OutputSafeguardID  json.RawMessage `json:"output_safeguard_id"`
+			BlockControversial *bool           `json:"block_controversial"`
 		}
 		if decode(r, &v) != nil || strings.TrimSpace(v.Name) == "" || len(v.Name) > 200 || len(v.Tags) > 50 {
 			apiError(w, 400, "invalid_request", "Invalid API key name or tags")
@@ -331,6 +335,9 @@ func (s *Server) adminKeys(w http.ResponseWriter, r *http.Request, a domain.Admi
 			k.Suffix = old.Suffix
 			k.CreatedAt = old.CreatedAt
 			k.LastUsedAt = old.LastUsedAt
+			k.InputSafeguardID = old.InputSafeguardID
+			k.OutputSafeguardID = old.OutputSafeguardID
+			k.BlockControversial = old.BlockControversial
 			action = "api_key.changed"
 			if old.Enabled && !k.Enabled {
 				action = "api_key.disabled"
@@ -350,6 +357,17 @@ func (s *Server) adminKeys(w http.ResponseWriter, r *http.Request, a domain.Admi
 				adminError(w, e)
 				return
 			}
+		}
+		if e := applySafeguardReference(v.InputSafeguardID, &k.InputSafeguardID); e != nil {
+			apiError(w, 400, "invalid_request", "Input safeguard must be an ID or null")
+			return
+		}
+		if e := applySafeguardReference(v.OutputSafeguardID, &k.OutputSafeguardID); e != nil {
+			apiError(w, 400, "invalid_request", "Output safeguard must be an ID or null")
+			return
+		}
+		if v.BlockControversial != nil {
+			k.BlockControversial = *v.BlockControversial
 		}
 		if e := s.Store.SaveAPIKey(r.Context(), &k); e != nil {
 			adminError(w, e)

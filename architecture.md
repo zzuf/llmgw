@@ -18,6 +18,7 @@ the binary needs only macOS system frameworks.
 `internal/auth`, `acl`, `cryptoutil`, and `keychain` own identity, authorization, and secrets.
 `internal/engine` provides typed endpoint requests and per-engine adapters. `internal/gateway` routes
 requests and serves the embedded administrative UI/API. `internal/logging` owns JSONL and statistics.
+`internal/safeguard` implements safety-classifier adapters, strict text extraction, and held-response validation.
 `internal/backup` owns consistent snapshots, encrypted portable archives, and validated restore.
 
 Requests receive a random request ID, a normalized TCP peer IP, and an optional bearer candidate.
@@ -30,6 +31,41 @@ explicit errors. Responses rewrite protocol-level model fields to the public ali
 Engine type is a profile, not proof of every capability. Model metadata contributes conservative
 capability defaults; administrators can override every flag. Auto detection is best effort and falls
 back to generic OpenAI. The configured type and detected type remain separate.
+
+## Optional API-key safeguards
+
+Safeguard profiles reference an engine and a synchronized upstream model independently of public aliases.
+API keys may select separate input/output profiles and optionally reject Controversial as well as Unsafe.
+Both profile references default to NULL, preserving existing keys, anonymous access, and realtime SSE.
+A supplied enabled key's policy applies even on models without key ACLs. Mandatory moderation requires
+the model's API-key ACL: neither an IP-only rule nor CORS requires the caller to supply a guarded key.
+
+After ACL and capability checks, the gateway snapshots key, safeguard, engine, and settings data without
+holding a DB transaction during inference. It runs input inspection before generation and output
+inspection before delivery. Guard calls use engine credentials directly, never recursive Gateway HTTP
+requests or client generation parameters. Disabled/missing guards and failed classifications stop the
+request. References survive model disappearance; referenced safeguards and engines cannot be deleted.
+
+The initial adapter is Qwen3Guard-Gen, using native nonstreaming Chat Completions and the model's official
+chat template on the upstream engine. Quantized variants must preserve that template. Classification
+parsing rejects missing, unknown, duplicate, or truncated labels. Request history and text content are
+represented with role labels, including system/developer, tools, reasoning, and all output choices/items.
+Unsupported media, token IDs, unseen stored context, and unrecognized content fields fail explicitly.
+Embeddings and rerank scores are numerical outputs; rerank document text still receives output inspection.
+
+An output-guarded SSE response is held in a private 0600 temporary file under a 0700 directory, unlinked
+immediately after opening. No headers/content are committed before a complete, structurally valid stream
+passes inspection. Events are then replayed in normalized order. Input-only safeguards retain incremental
+delivery after the input passes. Cancellation closes upstream work and the file descriptor. Defaults are
+256 KiB inspection text, 64 MiB held response, 64 KiB guard reply, and 60 seconds per guard call. The first,
+second, and fourth limits are live settings. Over-limit content is rejected without truncation, and these
+limits do not constrain unguarded requests.
+
+Access records contain per-stage classifier metadata and separate classifier token usage, with immutable
+queued snapshots. No extra client request is counted for internal guard calls, and generation aggregates
+exclude guard tokens. Client TTFT includes output-check delay; upstream TTFT is retained separately.
+Raw classifier output and rejected response text are not logged. Admin profile changes/checks and key
+policy changes are audited. Settings contains profile CRUD/checks; API keys assigns the policies.
 
 ## Authorization and administration
 
@@ -64,7 +100,9 @@ SQLite online snapshots use `VACUUM INTO` to include committed WAL contents. A l
 encrypted DB secrets and requires the original Keychain key. Portable backups wrap a database snapshot
 and its master key together inside an Argon2id-derived AES-GCM envelope; no plaintext secret is written
 to the archive. Import decrypts in memory, validates schema/integrity, and re-encrypts every database
-secret with the destination Mac's master key before installation. Sessions are discarded on restore.
+secret with the destination Mac's master key before installation. Known older schema versions are
+validated against their original schema and authenticated before migration, then validated again against
+the current schema; guard assignments remain disabled for pre-safeguard keys. Sessions are discarded on restore.
 Restore is staged and applied on next start under the exclusive process lock; it never replaces an open
 database. A pre-restore snapshot provides rollback. CLI restore refuses to run against an active service.
 Automatic backups run daily, with default 14-day retention. Directory and secret-containing files use
@@ -72,7 +110,7 @@ Automatic backups run daily, with default 14-day retention. Directory and secret
 
 ## Streaming, health, and observability
 
-Each request has its own context and timeout (default 10 minutes, configurable). SSE is forwarded and
+Each request has its own context and timeout (default 10 minutes, configurable). Unguarded SSE is forwarded and
 flushed per event, buffering only the current event, never the full generation. A bounded event size
 protects against malformed unbounded SSE frames, not client request sizes. Client cancellation closes
 the upstream request. TTFT measures first nonempty data event; usage comes from the final available

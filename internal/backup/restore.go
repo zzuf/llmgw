@@ -3,6 +3,7 @@ package backup
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"io"
@@ -95,6 +96,10 @@ func (m *Manager) stage(ctx context.Context, r io.Reader, passphrase string, aud
 		return err
 	}
 	if err = processSecrets(ctx, db, sourceMaster, m.MasterKey); err != nil {
+		return err
+	}
+	// Only a trusted, authenticated original may enter the migration machinery.
+	if err = migrateSnapshot(ctx, db); err != nil {
 		return err
 	}
 	if err = writeAuthentication(ctx, db, m.MasterKey); err != nil {
@@ -208,6 +213,10 @@ func ApplyPending(dataDir string, master []byte) error {
 		return err
 	}
 	if err = processSecrets(ctx, db, master, nil); err != nil {
+		return err
+	}
+	// An older binary may have staged this archive before the upgrade.
+	if err = migrateSnapshot(ctx, db); err != nil {
 		return err
 	}
 	var sessions int
@@ -326,4 +335,13 @@ func preserveDamagedDatabase(manager *Manager, mainPath string) (err error) {
 		return err
 	}
 	return syncDirectory(backups)
+}
+
+// migrateSnapshot operates solely on the private staging copy; the live database
+// and original archive remain untouched until ApplyPending's atomic replacement.
+func migrateSnapshot(ctx context.Context, db *sql.DB) error {
+	if err := database.Migrate(ctx, db); err != nil {
+		return err
+	}
+	return validateDatabase(ctx, db)
 }

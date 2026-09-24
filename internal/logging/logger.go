@@ -106,6 +106,10 @@ func (l *Logger) UpdateSettings(settings domain.Settings) error {
 func (l *Logger) Record(record domain.AccessRecord) error {
 	record.Prompt = RedactPrompt(record.Prompt)
 	record.APIKeyTags = append([]string{}, record.APIKeyTags...)
+	record.GuardChecks = append([]domain.GuardCheck{}, record.GuardChecks...)
+	for index := range record.GuardChecks {
+		record.GuardChecks[index].Categories = append([]string(nil), record.GuardChecks[index].Categories...)
+	}
 	if record.RequestID == "" {
 		var id [16]byte
 		if _, err := rand.Read(id[:]); err != nil {
@@ -323,15 +327,19 @@ func (l *Logger) writeStatistics(ctx context.Context, record domain.AccessRecord
 	if err != nil {
 		return err
 	}
+	checks, err := json.Marshal(record.GuardChecks)
+	if err != nil {
+		return err
+	}
 	tx, err := l.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
 	result, err := tx.ExecContext(ctx, `INSERT INTO request_stats
-  (id,timestamp,source_ip,request_id,api_key_id,api_key_name,api_key_tags,model_id,model_alias,engine_id,engine_name,upstream_model,endpoint,method,status,streaming,duration_ms,ttft_ms,input_tokens,output_tokens,total_tokens,error_code)
-  VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(request_id) DO NOTHING`,
-		record.RequestID, record.Timestamp, record.SourceIP, record.RequestID, record.APIKeyID, record.APIKeyName, string(tags), record.ModelID, record.ModelAlias, record.EngineID, record.EngineName, record.UpstreamModel, record.Endpoint, record.Method, record.Status, record.Streaming, record.DurationMS, record.TTFTMS, record.InputTokens, record.OutputTokens, record.TotalTokens, record.ErrorCode)
+  (id,timestamp,source_ip,request_id,api_key_id,api_key_name,api_key_tags,model_id,model_alias,engine_id,engine_name,upstream_model,endpoint,method,status,streaming,duration_ms,ttft_ms,input_tokens,output_tokens,total_tokens,error_code,guard_checks,upstream_ttft_ms)
+  VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(request_id) DO NOTHING`,
+		record.RequestID, record.Timestamp, record.SourceIP, record.RequestID, record.APIKeyID, record.APIKeyName, string(tags), record.ModelID, record.ModelAlias, record.EngineID, record.EngineName, record.UpstreamModel, record.Endpoint, record.Method, record.Status, record.Streaming, record.DurationMS, record.TTFTMS, record.InputTokens, record.OutputTokens, record.TotalTokens, record.ErrorCode, string(checks), record.UpstreamTTFTMS)
 	if err != nil {
 		return fmt.Errorf("insert request statistics: %w", err)
 	}

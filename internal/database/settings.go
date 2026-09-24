@@ -7,6 +7,7 @@ import (
 	"net"
 	"strconv"
 
+	"llmgw/internal/config"
 	"llmgw/internal/domain"
 )
 
@@ -75,6 +76,9 @@ func (s *Store) SaveSettings(ctx context.Context, settings domain.Settings) erro
 	}
 	if settings.HealthIntervalSeconds <= 0 || settings.RequestTimeoutSeconds <= 0 || settings.LogRotationBytes <= 0 || settings.LogGenerations <= 0 || settings.StatisticsRetentionDays <= 0 || settings.BackupRetentionDays <= 0 {
 		return errors.New("intervals, timeouts, sizes and retention values must be positive")
+	}
+	if err := config.ValidateGuardSettings(settings); err != nil {
+		return err
 	}
 	values, err := settingsValues(settings)
 	if err != nil {

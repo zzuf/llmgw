@@ -43,17 +43,56 @@ type Model struct {
 	UpdatedAt       string          `json:"updated_at"`
 }
 type APIKey struct {
-	ID           string   `json:"id"`
-	Name         string   `json:"name"`
-	SecretCipher []byte   `json:"-"`
-	SecretHash   string   `json:"-"`
-	Suffix       string   `json:"-"`
-	Masked       string   `json:"masked"`
-	Tags         []string `json:"tags"`
-	Enabled      bool     `json:"enabled"`
-	LastUsedAt   string   `json:"last_used_at"`
-	CreatedAt    string   `json:"created_at"`
-	UpdatedAt    string   `json:"updated_at"`
+	ID                 string   `json:"id"`
+	Name               string   `json:"name"`
+	SecretCipher       []byte   `json:"-"`
+	SecretHash         string   `json:"-"`
+	Suffix             string   `json:"-"`
+	Masked             string   `json:"masked"`
+	Tags               []string `json:"tags"`
+	Enabled            bool     `json:"enabled"`
+	LastUsedAt         string   `json:"last_used_at"`
+	CreatedAt          string   `json:"created_at"`
+	UpdatedAt          string   `json:"updated_at"`
+	InputSafeguardID   *string  `json:"input_safeguard_id"`
+	OutputSafeguardID  *string  `json:"output_safeguard_id"`
+	BlockControversial bool     `json:"block_controversial"`
+}
+
+type Safeguard struct {
+	ID              string `json:"id"`
+	Name            string `json:"name"`
+	EngineID        string `json:"engine_id"`
+	UpstreamModelID string `json:"upstream_model_id"`
+	Adapter         string `json:"adapter"`
+	Enabled         bool   `json:"enabled"`
+	Available       bool   `json:"available"`
+	LastCheck       string `json:"last_check"`
+	LastError       string `json:"last_error"`
+	CreatedAt       string `json:"created_at"`
+	UpdatedAt       string `json:"updated_at"`
+}
+
+// SafeguardBinding is a per-request snapshot; no database transaction spans inference.
+type SafeguardBinding struct {
+	Safeguard Safeguard
+	Engine    Engine
+}
+
+type GuardCheck struct {
+	Stage         string   `json:"stage"`
+	SafeguardID   string   `json:"safeguard_id"`
+	SafeguardName string   `json:"safeguard_name"`
+	EngineID      string   `json:"engine_id"`
+	EngineName    string   `json:"engine_name"`
+	UpstreamModel string   `json:"upstream_model"`
+	Result        string   `json:"result"`
+	Label         string   `json:"label,omitempty"`
+	Categories    []string `json:"categories,omitempty"`
+	Refusal       string   `json:"refusal,omitempty"`
+	DurationMS    float64  `json:"duration_ms"`
+	Usage         Usage    `json:"usage"`
+	ErrorCode     string   `json:"error_code,omitempty"`
 }
 type Admin struct {
 	ID           string `json:"id"`
@@ -98,8 +137,10 @@ type AccessRecord struct {
 	DurationMS    float64  `json:"duration_ms"`
 	TTFTMS        float64  `json:"ttft_ms"`
 	Usage
-	Prompt    any    `json:"prompt,omitempty"`
-	ErrorCode string `json:"error_code,omitempty"`
+	Prompt         any          `json:"prompt,omitempty"`
+	ErrorCode      string       `json:"error_code,omitempty"`
+	GuardChecks    []GuardCheck `json:"guard_checks,omitempty"`
+	UpstreamTTFTMS float64      `json:"upstream_ttft_ms,omitempty"`
 }
 type Settings struct {
 	ListenAddress           string `json:"listen_address"`
@@ -110,10 +151,13 @@ type Settings struct {
 	StatisticsRetentionDays int    `json:"statistics_retention_days"`
 	BackupRetentionDays     int    `json:"backup_retention_days"`
 	AutoBackupEnabled       bool   `json:"auto_backup_enabled"`
+	GuardTimeoutSeconds     int    `json:"guard_timeout_seconds"`
+	GuardMaxTextBytes       int64  `json:"guard_max_text_bytes"`
+	GuardMaxSpoolBytes      int64  `json:"guard_max_spool_bytes"`
 }
 
 func DefaultSettings() Settings {
-	return Settings{"0.0.0.0:8080", 30, 600, 100 * 1024 * 1024, 10, 90, 14, true}
+	return Settings{ListenAddress: "0.0.0.0:8080", HealthIntervalSeconds: 30, RequestTimeoutSeconds: 600, LogRotationBytes: 100 * 1024 * 1024, LogGenerations: 10, StatisticsRetentionDays: 90, BackupRetentionDays: 14, AutoBackupEnabled: true, GuardTimeoutSeconds: 60, GuardMaxTextBytes: 256 * 1024, GuardMaxSpoolBytes: 64 * 1024 * 1024}
 }
 
 type Backup struct {

@@ -18,12 +18,12 @@ go run golang.org/x/vuln/cmd/govulncheck@latest -show verbose ./...
 ```
 
 The standard test suite and race detector pass. Vet reports no issues. The binary is approximately
-17 MiB and `otool -L` shows only macOS libSystem, libresolv, CoreFoundation and Security.framework.
+18 MiB and `otool -L` shows only macOS libSystem, libresolv, CoreFoundation and Security.framework.
 Node is not a build or runtime dependency of the gateway.
 
-The macOS test listing contains 120 top-level tests, including one opt-in browser preview that skips
-normally. Table-driven subtests exercise additional cases. No TODO/stub implementation was left for a
-requested feature.
+The initial implementation and CORS verification listed 120 top-level tests, including one opt-in browser
+preview that skips normally. Safeguard coverage was subsequently added as described below. Table-driven
+subtests exercise additional cases.
 
 Govulncheck found no affected symbols or imported packages. It noted GO-2026-5932 in the unused
 `golang.org/x/crypto/openpgp` package at module level; the gateway imports Argon2, not OpenPGP.
@@ -79,3 +79,45 @@ go.mod, the build, or the delivered binary. Temporary test services were stopped
   ```
 
 No inference, root service, remote account integration, or production credentials are installed by the tests.
+
+## Safeguards UI and logging verification (2026-09-24)
+
+The safeguard UI/logging changes passed `go test ./internal/logging`, `go test -race ./internal/logging`,
+`go vet ./internal/logging`, and `node --check web/static/app.js`. The logging regression test first failed
+with missing SQLite guard metadata, then passed after persistence/query support was implemented. It
+checks JSONL/SQLite metadata equality, copied nested slices despite caller mutation, separate upstream
+and client TTFT, guard-name/verdict/category search, and unchanged normal request/token aggregates.
+After all feature changes and security-review fixes were integrated, `sh scripts/check.sh` (gofmt,
+`go vet ./...`, `go test ./...`), `go test -race ./...`, the native Apple Silicon build, and JavaScript
+syntax validation all passed. The suite lists 170 top-level tests, with the browser preview opt-in.
+`file bin/llmgw` reports a Mach-O arm64 executable; the binary reports `llmgw 0.1.0`.
+
+Gateway tests cover all four text-generation protocols, input/output/both/unguarded policies,
+input rejection without generation, full output suppression on rejection, Controversial policy,
+in-flight configuration snapshots, unavailable/disabled/reappearing guards, timeouts, and CORS.
+Network-level SSE tests verify no response starts while output classification is pending, safe replay,
+client TTFT including moderation, and realtime delivery with input-only checks. Guard tests include
+all choices, history, tools, reasoning, malformed/duplicate labels and JSON, lifecycle-field collisions,
+large integer preservation, incomplete/post-terminal events, cancellation, private unlinked spools,
+and bounds on text, buffered responses, and classifier replies. Valid usage survives invalid verdicts.
+Migration/restore tests cover v1 originals and v2 safeguards for local, portable, and pending restoration,
+including rejection of wrong keys and tampered schemas before migration.
+
+Actual embedded JavaScript was run with development-only happy-dom 20.14.5 against a disposable Go
+Gateway and Mock Engine. All 14 checks passed across 72 administrative HTTP requests, with zero
+JavaScript runtime/console errors. Expected administrative errors were the initial unauthenticated 401
+and rejection of deleting a referenced safeguard (409). Two confirmation dialogs were exercised.
+
+The flow covered initial setup, engine discovery, safeguard model suggestion with disabled-by-default
+registration, input/output connection tests, live guard-limit settings, creation of a guarded API key,
+enable/disable policy preservation, alias/ACL setup, safe inference (200), unsafe input rejection (403),
+stored `guard:Unsafe` filtering and detailed classification/token display, referenced-deletion protection,
+explicit None assignment clearing, normal inference after clearing, and unreferenced profile deletion.
+A separate mocked-HTTP DOM test also verified that a safeguard name containing HTML is displayed as text.
+
+The test used an injected ephemeral master key and temporary database, without real Keychain access or
+production credentials. The opt-in preview fixture includes `Qwen3Guard-Gen-mock` to reproduce official
+classification shapes. The preview process was stopped with SIGTERM and its Go test exited successfully.
+The development-only harness and result are under ignored `.tools/ui-qa/`; Node and happy-dom remain
+absent from the production build/runtime dependencies. This DOM exercise does not claim real-browser
+visual verification or accuracy of a real safeguard model's classifications.

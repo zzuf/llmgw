@@ -21,13 +21,13 @@
     engines: 'Connect local inference servers and monitor their availability.',
     'upstream-models': 'Discover models from your engines, then choose which ones to publish.',
     models: 'Give upstream models stable aliases and control who can use them.',
-    keys: 'Create client credentials, organize them with tags, and manage model access.',
+    keys: 'Create client credentials, organize them with tags, and assign input and output safeguards.',
     statistics: 'Explore request volume, token usage, and performance over time.',
     'access-logs': 'Inspect request metadata, timings, and errors. Times display in your local timezone.',
     'audit-logs': 'Review administrative changes and security events.',
     backups: 'Create snapshots and stage a verified restore for the next gateway restart.',
     admins: 'Manage the people who can configure this gateway.',
-    settings: 'Configure the listener, health checks, logging, and data retention.'
+    settings: 'Configure the listener, safeguards, health checks, logging, and data retention.'
   };
 
   function node(tag, attributes = {}, ...children) {
@@ -367,22 +367,35 @@
   }
 
   async function keysView() {
-    const keys = await items('keys'); const page = pageContainer('keys', [button('+ Create API key', () => keyEditor(), 'primary')]);
+    const [keys, guards] = await Promise.all([items('keys'), items('safeguards')]);
+    const guardNames = new Map(guards.map(guard => [guard.id, guard.name]));
+    const page = pageContainer('keys', [button('+ Create API key', () => keyEditor(), 'primary')]);
+    page.append(notice('Safeguards apply when a client supplies this enabled API key. Require a key in each model’s API-key ACL to make safeguards mandatory; anonymous requests and keys without safeguards keep their existing behavior.'));
     page.append(collectionPanel(keys, [
       {label: 'API key', render: row => nameCell(row.name, row.masked)},
       {label: 'Tags', render: row => node('div', {class: 'tag-list'}, (row.tags || []).map(tag => badge(tag)))},
       {label: 'Status', render: row => statusBadge(row.enabled ? 'Enabled' : 'Disabled')},
+      {label: 'Safeguards', render: row => node('div', {class: 'tag-list'}, row.input_safeguard_id ? badge(`Input: ${guardNames.get(row.input_safeguard_id) || row.input_safeguard_id}`) : null, row.output_safeguard_id ? badge(`Output: ${guardNames.get(row.output_safeguard_id) || row.output_safeguard_id}`) : null, !row.input_safeguard_id && !row.output_safeguard_id ? 'None' : null, row.block_controversial ? badge('Block Controversial', 'warn') : null)},
       {label: 'Last used', render: row => date(row.last_used_at)},
       {label: 'Actions', actions: true, render: row => rowActions(button('Reveal', () => revealKey(row), 'small'), button('Edit', () => keyEditor(row), 'small'), button(row.enabled ? 'Disable' : 'Enable', () => toggleKey(row), 'small'), button('Delete', () => remove('keys', row, `API key “${row.name}”`), 'small quiet'))}
     ], {noun: 'API keys', empty: 'No client API keys yet.'})); return page;
   }
-  function keyEditor(key = null) {
+  async function keyEditor(key = null) {
+    const guards = await items('safeguards');
+    const options = [['', 'None — no safeguard'], ...guards.map(guard => [guard.id, `${guard.name}${guard.enabled ? '' : ' (disabled)'}${guard.available ? '' : ' (unavailable)'}`])];
+    for (const id of [key?.input_safeguard_id, key?.output_safeguard_id]) if (id && !options.some(option => option[0] === id)) options.push([id, `${id} (unavailable)`]);
     openEditor(key ? 'Edit API key' : 'Create an API key', 'API keys authenticate clients. Model access is managed on each model.', form => {
       formField(form, 'Name', 'name', key?.name || '', {required: true, maxLength: 200, placeholder: 'Development laptop'});
       formField(form, 'Tags', 'tags', (key?.tags || []).join(', '), {placeholder: 'development, personal', help: 'Separate tags with commas. Tags also appear in usage statistics.'});
       check(form, 'Key enabled', 'enabled', key ? key.enabled : true);
+      const safeguards = formSection(form, 'Safeguards', 'Input is checked before generation; output is checked before delivery. An unavailable safeguard stops the request.');
+      selectField(safeguards, 'Input safeguard', 'input_safeguard_id', options, key?.input_safeguard_id || '');
+      selectField(safeguards, 'Output safeguard', 'output_safeguard_id', options, key?.output_safeguard_id || '');
+      check(safeguards, 'Also block Controversial', 'block_controversial', key?.block_controversial || false, 'Unsafe is always blocked. Safe and Controversial are allowed by default.');
+      safeguards.append(node('p', {}, 'Output checks delay all SSE events until the entire response passes. Images, audio, files, and unsupported content cause an error for guarded requests. Embedding vectors and rerank scores need no output check; returned rerank document text is checked.'));
+      safeguards.append(node('p', {}, 'To require safeguards, configure the model’s API-key ACL. Create safeguard profiles in Settings.'));
     }, async form => {
-      const result = await api(key ? `keys/${encodeURIComponent(key.id)}` : 'keys', {method: key ? 'PUT' : 'POST', body: {name: formValue(form, 'name'), tags: lines(formValue(form, 'tags')), enabled: checkedValue(form, 'enabled')}});
+      const result = await api(key ? `keys/${encodeURIComponent(key.id)}` : 'keys', {method: key ? 'PUT' : 'POST', body: {name: formValue(form, 'name'), tags: lines(formValue(form, 'tags')), enabled: checkedValue(form, 'enabled'), input_safeguard_id: formValue(form, 'input_safeguard_id') || null, output_safeguard_id: formValue(form, 'output_safeguard_id') || null, block_controversial: checkedValue(form, 'block_controversial')}});
       return {message: key ? 'API key saved.' : 'API key created.', after: key ? null : () => revealKey(result)};
     }, key ? 'Save API key' : 'Create API key');
   }
@@ -438,10 +451,16 @@
   async function logsView(audit = false) {
     const resource = audit ? 'audit-logs' : 'access-logs'; const page = pageContainer(resource); const panel = node('section', {class: 'panel'});
     const searchForm = node('form', {class: 'toolbar'}); const controls = node('div', {class: 'toolbar-controls'});
-    const search = node('input', {type: 'search', class: 'search', placeholder: audit ? 'Search actor, action, result…' : 'Search model, engine, key, source…', 'aria-label': 'Search logs'});
+    const search = node('input', {type: 'search', class: 'search', placeholder: audit ? 'Search actor, action, result…' : 'Search model, key, source, guard…', 'aria-label': 'Search logs'});
     controls.append(search, node('button', {type: 'submit', class: 'button'}, 'Search')); const count = node('span', {class: 'count'}); searchForm.append(controls, count);
     const content = node('div'); const pager = node('div', {class: 'pagination'}); let pageNumber = 1; let total = 0; let query = ''; let request = 0;
-    const detail = row => {closeEditor(); const list = node('dl', {class: 'details-grid'}); for (const [key, value] of Object.entries(row)) if (key !== 'prompt') list.append(node('dt', {}, key.replaceAll('_', ' ')), node('dd', {}, Array.isArray(value) ? value.join(', ') : typeof value === 'object' && value !== null ? JSON.stringify(value, null, 2) : String(value ?? '—'))); dialog.append(node('div', {class: 'dialog-header'}, node('h2', {id: 'dialog-title'}, audit ? 'Audit event' : 'Request details'), button('×', closeEditor, 'quiet icon', {'aria-label': 'Close details'})), node('div', {class: 'dialog-body'}, list)); dialog.showModal();};
+    const detail = row => {
+      closeEditor(); const list = node('dl', {class: 'details-grid'});
+      for (const [key, value] of Object.entries(row)) if (!['prompt', 'guard_checks'].includes(key)) list.append(node('dt', {}, key.replaceAll('_', ' ')), node('dd', {}, Array.isArray(value) ? value.join(', ') : typeof value === 'object' && value !== null ? JSON.stringify(value, null, 2) : String(value ?? '—')));
+      const body = node('div', {class: 'dialog-body'}, list);
+      if (row.guard_checks?.length) body.append(node('h3', {}, 'Safeguard checks'), guardChecksTable(row.guard_checks));
+      dialog.append(node('div', {class: 'dialog-header'}, node('h2', {id: 'dialog-title'}, audit ? 'Audit event' : 'Request details'), button('×', closeEditor, 'quiet icon', {'aria-label': 'Close details'})), body); dialog.showModal();
+    };
     const refresh = async () => {
       const current = ++request; content.replaceChildren(node('div', {class: 'loading'}, 'Loading logs…'));
       const data = await api(`${resource}?q=${encodeURIComponent(query)}&page=${pageNumber}&page_size=25`); if (current !== request) return; total = data.total || 0; count.textContent = `${num(total)} records`;
@@ -453,14 +472,57 @@
         {label: 'Client', render: row => nameCell(row.api_key_name || 'Anonymous', row.source_ip)}, {label: 'Endpoint', render: row => nameCell(row.endpoint, row.streaming ? 'Streaming' : 'JSON')},
         {label: 'Status', render: row => node('div', {}, badge(String(row.status), row.error_code || row.status >= 400 ? 'bad' : 'good'), row.error_code ? node('span', {class: 'secondary'}, row.error_code) : null)},
         {label: 'Duration / TTFT', render: row => nameCell(`${num(row.duration_ms, 0)} ms`, row.streaming ? `${num(row.ttft_ms, 0)} ms to first data` : '')},
-        {label: 'Tokens', render: row => num(row.total_tokens)}
+        {label: 'Tokens', render: row => num(row.total_tokens)},
+        {label: 'Safeguards', render: row => node('div', {class: 'tag-list'}, (row.guard_checks || []).map(check => badge(`${check.stage}: ${check.label || check.result}`, ['allowed', 'checked'].includes(check.result) ? 'good' : check.result === 'rejected' || check.error_code ? 'bad' : '')))}
       ];
       columns.push({label: 'Details', actions: true, render: row => button('View', () => detail(row), 'small')}); content.replaceChildren(table(columns, data.items || [], 'No log entries found.'));
       const pages = Math.max(1, Math.ceil(total / 25));
       pager.replaceChildren(node('span', {}, total ? `${num((pageNumber - 1) * 25 + 1)}–${num(Math.min(pageNumber * 25, total))} of ${num(total)}` : 'No records'), node('div', {class: 'inline'}, button('Previous', async () => {pageNumber--; await refresh();}, 'small', {disabled: pageNumber <= 1}), node('span', {}, `Page ${pageNumber} of ${pages}`), button('Next', async () => {pageNumber++; await refresh();}, 'small', {disabled: pageNumber >= pages})));
     };
     searchForm.addEventListener('submit', event => {event.preventDefault(); query = search.value.trim(); pageNumber = 1; run(refresh);});
-    panel.append(searchForm, content, pager); page.append(panel, node('p', {class: 'muted'}, audit ? 'Search supports actor:, source:, action:, target:, and result: prefixes.' : 'Search supports model:, engine:, key:, source:, endpoint:, status:, request:, and error: prefixes.')); await refresh(); return page;
+    panel.append(searchForm, content, pager); page.append(panel, node('p', {class: 'muted'}, audit ? 'Search supports actor:, source:, action:, target:, and result: prefixes.' : 'Search supports model:, engine:, key:, source:, endpoint:, status:, request:, error:, and guard: prefixes. Guard names, labels, categories, and results are searchable. Guard tokens are separate from generation totals.')); await refresh(); return page;
+  }
+
+  function guardChecksTable(checks) {
+    return table([
+      {label: 'Stage / safeguard', render: check => nameCell(check.stage, check.safeguard_name || check.safeguard_id)},
+      {label: 'Result', render: check => nameCell(check.label || check.result || 'Unknown', [check.result, check.error_code].filter(Boolean).join(' · '))},
+      {label: 'Classification', render: check => nameCell((check.categories || []).join(', ') || '—', check.refusal ? `Refusal: ${check.refusal}` : '')},
+      {label: 'Time / tokens', render: check => nameCell(`${num(check.duration_ms, 1)} ms`, `${num(check.usage?.input_tokens)} input / ${num(check.usage?.output_tokens)} output / ${num(check.usage?.total_tokens)} total`)},
+      {label: 'Engine / upstream', render: check => nameCell(check.engine_name || check.engine_id, check.upstream_model)}
+    ], checks, 'No safeguard checks.');
+  }
+
+  async function safeguardEditor(guard = null) {
+    const [upstreams, engines] = await Promise.all([items('upstream-models'), items('engines')]);
+    const engineNames = new Map(engines.map(engine => [engine.id, engine.name]));
+    if (guard && !upstreams.some(up => up.engine_id === guard.engine_id && up.upstream_id === guard.upstream_model_id)) upstreams.push({engine_id: guard.engine_id, upstream_id: guard.upstream_model_id, available: false});
+    if (!upstreams.length) {toast('Connect an engine and sync models before adding a safeguard.', true); return;}
+    const candidate = up => /qwen3guard[-_]?gen/i.test(up.upstream_id);
+    const initial = upstreams.find(up => up.engine_id === guard?.engine_id && up.upstream_id === guard?.upstream_model_id) || upstreams.find(up => up.available && candidate(up)) || upstreams.find(up => up.available) || upstreams[0];
+    let selected = initial;
+    openEditor(guard ? 'Edit safeguard' : 'Add safeguard', 'Use a synchronized engine model directly. A published model alias is not required.', form => {
+      formField(form, 'Name', 'name', guard?.name || '', {required: true, maxLength: 200, placeholder: 'Qwen safety'});
+      const upstream = selectField(form, 'Safeguard model', 'upstream', upstreams.map((up, index) => [index, `${engineNames.get(up.engine_id) || up.engine_id} / ${up.upstream_id}${candidate(up) ? ' (suggested by name)' : ''}${up.available ? '' : ' (unavailable)'}`]), upstreams.indexOf(initial), 'Names suggest candidates only. Verify that this model uses the native Qwen3Guard-Gen chat template.');
+      upstream.addEventListener('change', () => {selected = upstreams[Number(upstream.value)];});
+      selectField(form, 'Guard format', 'adapter', [['qwen3guard_gen', 'Qwen3Guard-Gen']], guard?.adapter || 'qwen3guard_gen');
+      check(form, 'Safeguard enabled', 'enabled', guard?.enabled || false, 'Enable explicitly after selecting a compatible model. Disabled or unavailable safeguards stop requests from assigned keys.');
+      form.append(node('p', {}, 'Quantized models must preserve the official chat template. Save and use Check to test both input and output classification before assigning this profile to an API key.'));
+    }, async form => {
+      await api(guard ? `safeguards/${encodeURIComponent(guard.id)}` : 'safeguards', {method: guard ? 'PUT' : 'POST', body: {name: formValue(form, 'name'), engine_id: selected.engine_id, upstream_model_id: selected.upstream_id, adapter: formValue(form, 'adapter'), enabled: checkedValue(form, 'enabled')}});
+      return {message: 'Safeguard saved.'};
+    }, guard ? 'Save safeguard' : 'Add safeguard');
+  }
+
+  async function checkSafeguard(guard, trigger) {
+    const currentPage = state.page; trigger.disabled = true; trigger.textContent = 'Checking…';
+    try {
+      const result = await api(`safeguards/${encodeURIComponent(guard.id)}/check`, {method: 'POST', body: {}});
+      if (currentPage !== state.page || !state.admin) return;
+      await showPage(state.page); closeEditor();
+      dialog.append(node('div', {class: 'dialog-header'}, node('h2', {id: 'dialog-title'}, `Check: ${guard.name}`), button('×', closeEditor, 'quiet icon', {'aria-label': 'Close check results'})), node('div', {class: 'dialog-body'}, notice(result.ok ? 'Both input and output classification formats passed.' : 'The safeguard did not pass both checks. Review the results and the model’s chat template.', result.ok ? 'success' : 'error'), guardChecksTable([result.input, result.output].filter(Boolean))));
+      dialog.showModal();
+    } finally {trigger.disabled = false; trigger.textContent = 'Check';}
   }
 
   async function backupsView() {
@@ -507,13 +569,29 @@
   }
 
   async function settingsView() {
-    const settings = await api('settings'); const page = pageContainer('settings'); const form = node('form', {class: 'settings-form'});
+    const [settings, guards, engines] = await Promise.all([api('settings'), items('safeguards'), items('engines')]);
+    const engineNames = new Map(engines.map(engine => [engine.id, engine.name]));
+    const page = pageContainer('settings'); const form = node('form', {class: 'settings-form'});
     function settingsPanel(title, description) {const body = node('div', {class: 'panel-body'}, node('h2', {}, title), node('p', {class: 'description'}, description)); const panel = node('section', {class: 'panel'}, body); form.append(panel); return body;}
     const server = settingsPanel('Server and requests', 'Changes apply to new operations. Existing streams can finish.');
     formField(server, 'Listen address', 'listen_address', settings.listen_address, {required: true, placeholder: '0.0.0.0:8080', help: 'Use host:port. A listener change is applied only if the new address can be bound.'});
     const timing = node('div', {class: 'field-grid'}); server.append(timing);
     formField(timing, 'Health check interval (seconds)', 'health_interval_seconds', settings.health_interval_seconds, {type: 'number', required: true, min: 1, max: 86400, step: 1});
     formField(timing, 'Request timeout (seconds)', 'request_timeout_seconds', settings.request_timeout_seconds, {type: 'number', required: true, min: 1, max: 86400, step: 1});
+    const safeguards = settingsPanel('Safeguards', 'Register safeguard models here, then independently assign input and output checks in API keys. A failed or unavailable guard stops the request. Changes apply to new requests.');
+    safeguards.append(button('+ Add safeguard', () => safeguardEditor(), 'primary'));
+    safeguards.append(collectionPanel(guards, [
+      {label: 'Safeguard', render: row => nameCell(row.name, row.adapter)},
+      {label: 'Engine / model', render: row => nameCell(engineNames.get(row.engine_id) || row.engine_id, row.upstream_model_id)},
+      {label: 'Status', render: row => node('div', {class: 'tag-list'}, statusBadge(row.enabled ? 'Enabled' : 'Disabled'), statusBadge(row.available ? 'Available' : 'Unavailable'))},
+      {label: 'Last check', render: row => nameCell(date(row.last_check), row.last_error)},
+      {label: 'Actions', actions: true, render: row => rowActions(button('Check', trigger => checkSafeguard(row, trigger), 'small'), button('Edit', () => safeguardEditor(row), 'small'), button('Delete', () => remove('safeguards', row, `safeguard “${row.name}”`), 'small quiet'))}
+    ], {noun: 'safeguards', empty: 'No safeguards configured.'}));
+    safeguards.append(node('p', {class: 'description'}, 'Referenced safeguards and engines cannot be deleted. Output checks hold all SSE events until the complete response is approved. Guard usage is recorded separately from generation usage.'));
+    const guardLimits = node('div', {class: 'field-grid'}); safeguards.append(guardLimits);
+    formField(guardLimits, 'Safeguard timeout (seconds)', 'guard_timeout_seconds', settings.guard_timeout_seconds, {type: 'number', required: true, min: 1, max: 86400, step: 1});
+    formField(guardLimits, 'Inspection text limit (bytes)', 'guard_max_text_bytes', settings.guard_max_text_bytes, {type: 'number', required: true, min: 1, max: 16777216, step: 1, help: 'Default: 262144 (256 KiB). Maximum: 16 MiB. Over-limit text is rejected, never truncated.'});
+    formField(guardLimits, 'Held response limit (bytes)', 'guard_max_spool_bytes', settings.guard_max_spool_bytes, {type: 'number', required: true, min: 1, max: 1073741824, step: 1, help: 'Default: 67108864 (64 MiB). Maximum: 1 GiB. Held SSE uses a private temporary file. Guard replies have a fixed 64 KiB limit.'});
     const logs = settingsPanel('Logs and statistics', 'Detailed request logs rotate on disk. Daily aggregates outlive detail retention.');
     const logGrid = node('div', {class: 'field-grid'}); logs.append(logGrid);
     formField(logGrid, 'Rotate detailed logs at (MiB)', 'log_rotation_mib', settings.log_rotation_bytes / 1048576, {type: 'number', required: true, min: 1 / 1024, max: 1048576, step: 'any'});
@@ -526,7 +604,7 @@
     form.addEventListener('submit', async event => {
       event.preventDefault(); if (!form.reportValidity() || submit.disabled) return;
       const data = {...settings, listen_address: formValue(form, 'listen_address'), auto_backup_enabled: checkedValue(form, 'auto_backup_enabled'), log_rotation_bytes: Math.round(Number(formValue(form, 'log_rotation_mib')) * 1048576)};
-      for (const key of ['health_interval_seconds', 'request_timeout_seconds', 'log_generations', 'statistics_retention_days', 'backup_retention_days']) data[key] = Number(formValue(form, key));
+      for (const key of ['health_interval_seconds', 'request_timeout_seconds', 'log_generations', 'statistics_retention_days', 'backup_retention_days', 'guard_timeout_seconds', 'guard_max_text_bytes', 'guard_max_spool_bytes']) data[key] = Number(formValue(form, key));
       submit.disabled = true; errorBox.hidden = true;
       try {await api('settings', {method: 'PUT', body: data}); if (data.listen_address !== settings.listen_address) {page.prepend(notice(`Listener changed to ${data.listen_address}. Open the gateway’s new address manually to continue; this page will not redirect automatically.`, 'success')); Object.assign(settings, data);} else {Object.assign(settings, data); toast('Settings saved.');}}
       catch (error) {if (error.status === 401) {await showAuth(false, 'Sign in to continue.'); return;} errorBox.textContent = error.message; errorBox.hidden = false;} finally {submit.disabled = false;}

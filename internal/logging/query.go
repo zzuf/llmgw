@@ -166,8 +166,9 @@ func searchWhere(filter string, fields map[string][]string, all []string) (strin
 
 var accessFields = map[string][]string{
 	"model": {"model_id", "model_alias", "upstream_model"}, "engine": {"engine_id", "engine_name"}, "key": {"api_key_id", "api_key_name", "api_key_tags"}, "source": {"source_ip"}, "endpoint": {"endpoint"}, "status": {"status"}, "request": {"request_id"}, "error": {"error_code"},
+	"guard": {"guard_checks"},
 }
-var accessSearch = []string{"request_id", "source_ip", "api_key_id", "api_key_name", "api_key_tags", "model_id", "model_alias", "engine_id", "engine_name", "upstream_model", "endpoint", "method", "status", "error_code"}
+var accessSearch = []string{"request_id", "source_ip", "api_key_id", "api_key_name", "api_key_tags", "model_id", "model_alias", "engine_id", "engine_name", "upstream_model", "endpoint", "method", "status", "error_code", "guard_checks"}
 
 // AccessLogs returns prompt-free detail rows with a stable timestamp/id order.
 func AccessLogs(ctx context.Context, db *sql.DB, filter string, page, pageSize int) ([]domain.AccessRecord, int, error) {
@@ -182,7 +183,7 @@ func AccessLogs(ctx context.Context, db *sql.DB, filter string, page, pageSize i
 	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM request_stats`+where, args...).Scan(&total); err != nil {
 		return nil, 0, err
 	}
-	rows, err := tx.QueryContext(ctx, `SELECT timestamp,source_ip,request_id,api_key_id,api_key_name,api_key_tags,model_id,model_alias,engine_id,engine_name,upstream_model,endpoint,method,status,streaming,duration_ms,ttft_ms,input_tokens,output_tokens,total_tokens,error_code FROM request_stats`+where+` ORDER BY timestamp DESC,id DESC LIMIT ? OFFSET ?`, append(args, limit, offset)...)
+	rows, err := tx.QueryContext(ctx, `SELECT timestamp,source_ip,request_id,api_key_id,api_key_name,api_key_tags,model_id,model_alias,engine_id,engine_name,upstream_model,endpoint,method,status,streaming,duration_ms,ttft_ms,input_tokens,output_tokens,total_tokens,error_code,guard_checks,upstream_ttft_ms FROM request_stats`+where+` ORDER BY timestamp DESC,id DESC LIMIT ? OFFSET ?`, append(args, limit, offset)...)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -190,8 +191,8 @@ func AccessLogs(ctx context.Context, db *sql.DB, filter string, page, pageSize i
 	result := []domain.AccessRecord{}
 	for rows.Next() {
 		var record domain.AccessRecord
-		var tags string
-		if err := rows.Scan(&record.Timestamp, &record.SourceIP, &record.RequestID, &record.APIKeyID, &record.APIKeyName, &tags, &record.ModelID, &record.ModelAlias, &record.EngineID, &record.EngineName, &record.UpstreamModel, &record.Endpoint, &record.Method, &record.Status, &record.Streaming, &record.DurationMS, &record.TTFTMS, &record.InputTokens, &record.OutputTokens, &record.TotalTokens, &record.ErrorCode); err != nil {
+		var tags, checks string
+		if err := rows.Scan(&record.Timestamp, &record.SourceIP, &record.RequestID, &record.APIKeyID, &record.APIKeyName, &tags, &record.ModelID, &record.ModelAlias, &record.EngineID, &record.EngineName, &record.UpstreamModel, &record.Endpoint, &record.Method, &record.Status, &record.Streaming, &record.DurationMS, &record.TTFTMS, &record.InputTokens, &record.OutputTokens, &record.TotalTokens, &record.ErrorCode, &checks, &record.UpstreamTTFTMS); err != nil {
 			return nil, 0, err
 		}
 		if err := json.Unmarshal([]byte(tags), &record.APIKeyTags); err != nil {
@@ -199,6 +200,9 @@ func AccessLogs(ctx context.Context, db *sql.DB, filter string, page, pageSize i
 		}
 		if record.APIKeyTags == nil {
 			record.APIKeyTags = []string{}
+		}
+		if err := json.Unmarshal([]byte(checks), &record.GuardChecks); err != nil {
+			return nil, 0, fmt.Errorf("decode request guard checks: %w", err)
 		}
 		result = append(result, record)
 	}

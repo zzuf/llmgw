@@ -18,6 +18,7 @@ import (
 	"llmgw/internal/domain"
 	"llmgw/internal/engine"
 	"llmgw/internal/logging"
+	"llmgw/internal/safeguard"
 )
 
 var endpoints = map[string]string{"/v1/chat/completions": "chat_completions", "/v1/responses": "responses", "/v1/completions": "completions", "/v1/embeddings": "embeddings", "/v1/rerank": "rerank", "/v1/messages": "messages"}
@@ -232,6 +233,13 @@ func (s *Server) public(w *responseWriter, r *http.Request, requestID string) {
 	if typ == "auto" && en.DetectedType != "" {
 		typ = en.DetectedType
 	}
+	policy, e := s.prepareGuards(ctx, req, key, settings, &rec)
+	if e != nil {
+		status, code, msg := guardFailure(e)
+		fail(status, code, msg)
+		return
+	}
+	upstreamStarted := time.Now()
 	resp, e := engine.New(typ).Do(ctx, s.Client, en, secret, req, m.UpstreamModelID)
 	if e != nil {
 		status, code, msg := upstreamFailure(e, ctx)
@@ -248,6 +256,20 @@ func (s *Server) public(w *responseWriter, r *http.Request, requestID string) {
 	defer resp.Body.Close()
 	if key.ID != "" {
 		_ = s.Store.TouchAPIKey(r.Context(), key.ID)
+	}
+	if policy != nil && policy.output != nil {
+		if e := s.forwardGuarded(ctx, w, resp, req, m.Alias, policy, &rec, start, upstreamStarted); e != nil {
+			status, code, msg := upstreamFailure(e, ctx)
+			var guardErr *safeguard.Error
+			if errors.As(e, &guardErr) {
+				status, code, msg = guardFailure(e)
+			}
+			rec.ErrorCode = code
+			if !w.wrote {
+				fail(status, code, msg)
+			}
+		}
+		return
 	}
 	if req.Stream {
 		if !strings.HasPrefix(strings.ToLower(resp.Header.Get("Content-Type")), "text/event-stream") {
